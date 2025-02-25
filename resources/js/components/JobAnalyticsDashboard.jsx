@@ -35,21 +35,22 @@ const JobAnalyticsDashboard = ({ analytics }) => {
 
     // Pre-process data for charts once
     const salaryData = useMemo(() => {
-        if (!analytics.salary_ranges || !analytics.salary_ranges[salaryView]) {
-            return [];
-        }
+      if (!analytics.salary_ranges || !analytics.salary_ranges[salaryView]) {
+          return [];
+      }
 
-        const data = analytics.salary_ranges[salaryView]
-            .filter(job => job.min && job.max)
-            .map(job => ({
-                company: job.company || 'Unknown',
-                minSalary: job.min,
-                maxSalary: job.max,
-                avgSalary: job.avg
-            }));
+      const data = analytics.salary_ranges[salaryView]
+          .filter(job => job.min && job.max && job.company)
+          .map(job => ({
+              company: job.company,
+              minSalary: job.min,
+              maxSalary: job.max,
+              avgSalary: job.avg
+          }));
 
-        return data.sort((a, b) => b.maxSalary - a.maxSalary).slice(0, 8);
-    }, [analytics.salary_ranges, salaryView]);
+      // Sort by max salary and take top 8
+      return data.sort((a, b) => b.maxSalary - a.maxSalary).slice(0, 8);
+  }, [analytics.salary_ranges, salaryView]);
 
     const skillsData = useMemo(() => {
         if (!analytics.skills) return [];
@@ -380,36 +381,36 @@ const JobAnalyticsDashboard = ({ analytics }) => {
                         </div>
                     </div>
                     <div className="h-80">
-                        {salaryData.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={salaryData} layout="vertical">
-                                    <CartesianGrid strokeDasharray="3 3" />
-                                    <XAxis
-                                        type="number"
-                                        tickFormatter={(value) =>
-                                            formatCurrency(value).replace('£', '£')}
-                                    />
-                                    <YAxis
-                                        type="category"
-                                        dataKey="company"
-                                        width={100}
-                                        tick={{ fontSize: 12 }}
-                                    />
-                                    <Tooltip
-                                        formatter={(value) => formatCurrency(value)}
-                                        labelFormatter={(label) => `Company: ${label}`}
-                                    />
-                                    <Legend />
-                                    <Bar dataKey="minSalary" name="Min" fill={COLORS[0]} />
-                                    <Bar dataKey="maxSalary" name="Max" fill={COLORS[1]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        ) : (
-                            <div className="h-full flex items-center justify-center">
-                                <p className="text-gray-500">No salary data available for {salaryView} positions</p>
-                            </div>
-                        )}
-                    </div>
+    {salaryData.length > 0 ? (
+        <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={salaryData} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                    type="number"
+                    tickFormatter={(value) =>
+                        formatCurrency(value).replace('£', '£')}
+                />
+                <YAxis
+                    type="category"
+                    dataKey="company"
+                    width={100}
+                    tick={{ fontSize: 12 }}
+                />
+                <Tooltip
+                    formatter={(value) => formatCurrency(value)}
+                    labelFormatter={(label) => `Company: ${label}`}
+                />
+                <Legend />
+                <Bar dataKey="minSalary" name="Min" fill={COLORS[0]} />
+                <Bar dataKey="maxSalary" name="Max" fill={COLORS[1]} />
+            </BarChart>
+        </ResponsiveContainer>
+    ) : (
+        <div className="h-full flex items-center justify-center">
+            <p className="text-gray-500">No salary data available for {salaryView} positions</p>
+        </div>
+    )}
+</div>
                 </div>
             </div>
         </div>
