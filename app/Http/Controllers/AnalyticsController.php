@@ -191,7 +191,7 @@ class AnalyticsController extends Controller
 
         // Calculate how many pages we need
         $pageSize = 100;
-        $pagesToFetch = min(ceil($targetCount / $pageSize), 10); // Max 10 pages (1000 jobs)
+        $pagesToFetch = min(ceil($targetCount / $pageSize), 100); // Max 100 pages
 
         try {
             for ($page = 1; $page <= $pagesToFetch; $page++) {

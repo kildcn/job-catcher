@@ -80,6 +80,7 @@ class CareerjetService
                     'contractperiod' => $params['contractperiod'] ?? '',
                     'salary_min' => $params['salary_min'] ?? '',
                     'salary_max' => $params['salary_max'] ?? '',
+                    'date_from' => $params['date_from'] ?? '',
                 ]);
 
                 if ($result->type !== 'JOBS') {

@@ -26,6 +26,11 @@ class Kernel extends ConsoleKernel
                  ->dailyAt('00:00')
                  ->withoutOverlapping()
                  ->runInBackground();
+
+        $schedule->command('jobs:precache --months=24')
+                 ->weekly()
+                 ->withoutOverlapping()
+                 ->runInBackground();
     }
 
     /**

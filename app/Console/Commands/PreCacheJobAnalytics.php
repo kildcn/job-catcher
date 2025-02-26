@@ -17,10 +17,11 @@ class PreCacheJobAnalytics extends Command
      * @var string
      */
     protected $signature = 'jobs:precache
-                            {--common-searches : Pre-cache common job search analytics}
-                            {--keywords= : Specific keywords to cache}
-                            {--location= : Specific location to cache}
-                            {--days=30 : Number of days to keep cached data}';
+                        {--common-searches : Pre-cache common job search analytics}
+                        {--keywords= : Specific keywords to cache}
+                        {--location= : Specific location to cache}
+                        {--days=30 : Number of days to keep cached data}
+                        {--months=24 : How many months back to fetch data}';
 
     /**
      * The console command description.
@@ -217,7 +218,8 @@ class PreCacheJobAnalytics extends Command
                 'keywords' => $keywords,
                 'location' => $location,
                 'page' => 1,
-                'pagesize' => 1
+                'pagesize' => 1,
+                'date_from' => now()->subMonths($this->option('months'))->format('Y-m-d')
             ]);
 
             $apiCount = $result['total'] ?? 0;
@@ -225,7 +227,7 @@ class PreCacheJobAnalytics extends Command
             if ($apiCount > 0) {
                 // Calculate how many pages to fetch
                 $pageSize = 100;
-                $pagesToFetch = min(ceil($apiCount / $pageSize), 10); // Max 10 pages
+                $pagesToFetch = min(ceil($targetCount / $pageSize), 100); // Max 100 pages
 
                 for ($page = 1; $page <= $pagesToFetch; $page++) {
                     $pageResult = $careerjetService->searchJobs([
