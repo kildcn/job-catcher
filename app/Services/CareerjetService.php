@@ -7,18 +7,21 @@ use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class CareerjetService
 {
     private $api;
     private $cacheTimeout;
     private $maxRetries = 3;
+    private $affiliateId;
 
     public function __construct()
     {
         require_once base_path('app/Services/Careerjet_API.php');
         $this->api = new \Careerjet_API('en_GB');
         $this->cacheTimeout = config('app.cache_timeout', 300); // 5 minutes default
+        $this->affiliateId = env('CAREERJET_AFFID', 'e22e722bd9a30362472924954689ec18');
     }
 
     /**
@@ -75,7 +78,7 @@ class CareerjetService
                     'location' => $location,
                     'page' => $page,
                     'pagesize' => $pagesize,
-                    'affid' => '678bdee048',
+                    'affid' => $this->affiliateId,
                     'contracttype' => $params['contracttype'] ?? '',
                     'contractperiod' => $params['contractperiod'] ?? '',
                     'salary_min' => $params['salary_min'] ?? '',
@@ -97,8 +100,8 @@ class CareerjetService
                     ];
                 }
 
-                // Store the jobs in database for analytics if it's the first page
-                if ($page === 1 && !empty($result->jobs)) {
+                // Store the jobs in database for analytics
+                if (!empty($result->jobs)) {
                     $this->storeJobs($result->jobs);
                 }
 
@@ -143,7 +146,7 @@ class CareerjetService
     }
 
     /**
-     * Store jobs in the database for analytics
+     * Store jobs in the database using raw insert/update
      *
      * @param array $jobs
      * @return void
@@ -151,43 +154,167 @@ class CareerjetService
     private function storeJobs($jobs)
     {
         $stored = 0;
+        $skipped = 0;
         $errors = 0;
+        $beforeCount = Job::count();
 
-        foreach ($jobs as $jobData) {
+        foreach ($jobs as $index => $jobData) {
             try {
-                // Create the job data array with all required fields
-                $job = [
-                    'title' => $jobData->title,
-                    'description' => $jobData->description,
-                    'company' => $jobData->company,
-                    'locations' => $jobData->locations,
-                    'job_date' => $jobData->date,
-                    'salary' => $jobData->formatted_salary ?? $jobData->salary ?? null,
-                    'salary_min' => $jobData->salary_min ?? null,
-                    'salary_max' => $jobData->salary_max ?? null,
-                    'salary_type' => $jobData->salary_type ?? null,
-                    'salary_currency_code' => $jobData->salary_currency_code ?? null
-                ];
+                // Debug what we're processing
+                Log::debug("Processing job data", [
+                    'index' => $index,
+                    'title' => $jobData->title ?? 'No title',
+                    'url_provided' => !empty($jobData->url)
+                ]);
 
-                Job::updateOrCreate(
-                    ['url' => $jobData->url],
-                    $job
-                );
+                // Skip jobs without URL (our primary identifier)
+                if (empty($jobData->url)) {
+                    Log::warning("Skipping job with no URL", [
+                        'title' => $jobData->title ?? 'Unknown',
+                        'company' => $jobData->company ?? 'Unknown'
+                    ]);
+                    $skipped++;
+                    continue;
+                }
 
-                $stored++;
+                // Fix URLs with single quotes to prevent SQL issues
+                $url = str_replace("'", "''", $jobData->url);
+
+                // First, check if job already exists
+                $exists = DB::table('career_jobs')
+                    ->where('url', $jobData->url)
+                    ->exists();
+
+                if ($exists) {
+                    // Job already exists - we'll update it
+                    $this->updateExistingJob($jobData);
+                    $skipped++;
+                } else {
+                    // Job doesn't exist - insert new record
+                    $this->insertNewJob($jobData);
+                    $stored++;
+                }
             } catch (Exception $e) {
-                Log::error('Error storing job:', [
-                    'url' => $jobData->url,
-                    'error' => $e->getMessage()
+                // Log the full error and continue with the next job
+                Log::error('Error processing job:', [
+                    'index' => $index,
+                    'url' => $jobData->url ?? 'Unknown',
+                    'title' => $jobData->title ?? 'Unknown',
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
                 ]);
                 $errors++;
             }
         }
 
-        Log::debug('Jobs storage result:', [
-            'stored' => $stored,
+        $afterCount = Job::count();
+        $netChange = $afterCount - $beforeCount;
+
+        Log::info('Jobs storage result:', [
+            'before_count' => $beforeCount,
+            'after_count' => $afterCount,
+            'net_change' => $netChange,
+            'new_stored' => $stored,
+            'skipped_existing' => $skipped,
             'errors' => $errors,
             'total_attempted' => count($jobs)
         ]);
+    }
+
+    /**
+     * Update an existing job in the database
+     */
+    private function updateExistingJob($jobData)
+    {
+        try {
+            // Update the existing job record
+            $job = Job::where('url', $jobData->url)->first();
+
+            if ($job) {
+                $job->title = $jobData->title ?? $job->title;
+                $job->description = $jobData->description ?? $job->description;
+                $job->company = $jobData->company ?? $job->company;
+                $job->locations = $jobData->locations ?? $job->locations;
+                $job->job_date = $jobData->date ?? $job->job_date;
+                $job->salary = $jobData->salary ?? $job->salary;
+
+                // Update salary info if available
+                if (isset($jobData->salary_min)) {
+                    $job->salary_min = $jobData->salary_min;
+                }
+
+                if (isset($jobData->salary_max)) {
+                    $job->salary_max = $jobData->salary_max;
+                }
+
+                if (isset($jobData->salary_type)) {
+                    $job->salary_type = $jobData->salary_type;
+                }
+
+                if (isset($jobData->salary_currency_code)) {
+                    $job->salary_currency_code = $jobData->salary_currency_code;
+                }
+
+                $job->save();
+
+                Log::debug("Updated existing job", ['url' => $job->url]);
+                return true;
+            }
+
+            return false;
+        } catch (Exception $e) {
+            Log::error('Error updating job:', [
+                'url' => $jobData->url,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
+    }
+
+    /**
+     * Insert a new job into the database
+     */
+    private function insertNewJob($jobData)
+    {
+        try {
+            // Create using a model to ensure proper fillable fields
+            $job = new Job();
+            $job->title = $jobData->title;
+            $job->description = $jobData->description ?? '';
+            $job->company = $jobData->company ?? 'Unknown';
+            $job->locations = $jobData->locations ?? '';
+            $job->url = $jobData->url;
+            $job->job_date = $jobData->date ?? now();
+            $job->salary = $jobData->salary ?? null;
+
+            // Add salary info if present
+            if (isset($jobData->salary_min)) {
+                $job->salary_min = $jobData->salary_min;
+            }
+
+            if (isset($jobData->salary_max)) {
+                $job->salary_max = $jobData->salary_max;
+            }
+
+            if (isset($jobData->salary_type)) {
+                $job->salary_type = $jobData->salary_type;
+            }
+
+            if (isset($jobData->salary_currency_code)) {
+                $job->salary_currency_code = $jobData->salary_currency_code;
+            }
+
+            $job->save();
+
+            Log::debug("Inserted new job", ['url' => $job->url]);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Error inserting job:', [
+                'url' => $jobData->url,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e;
+        }
     }
 }

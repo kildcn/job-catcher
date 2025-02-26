@@ -8,6 +8,9 @@ class Job extends Model
 {
     protected $table = 'career_jobs';
 
+    /**
+     * The attributes that are mass assignable.
+     */
     protected $fillable = [
         'title',
         'description',
@@ -22,8 +25,11 @@ class Job extends Model
         'salary_currency_code'
     ];
 
+    /**
+     * The attributes that should be cast.
+     */
     protected $casts = [
-        'job_date' => 'date',
+        'job_date' => 'datetime',
         'salary_min' => 'float',
         'salary_max' => 'float'
     ];
