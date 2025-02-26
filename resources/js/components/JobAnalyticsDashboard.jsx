@@ -33,6 +33,13 @@ const JobAnalyticsDashboard = ({ analytics }) => {
         }).format(value);
     }, []);
 
+    // Function to get the full analysis URL
+    const getFullAnalysisUrl = () => {
+        const currentParams = new URLSearchParams(window.location.search);
+        currentParams.set('full_analysis', '1');
+        return `${window.location.pathname}?${currentParams.toString()}`;
+    };
+
     // Pre-process data for charts once
     const salaryData = useMemo(() => {
       if (!analytics.salary_ranges || !analytics.salary_ranges[salaryView]) {
@@ -134,6 +141,11 @@ const JobAnalyticsDashboard = ({ analytics }) => {
         );
     }
 
+    // Determine if we're showing partial results
+    const isPartialAnalysis = analytics.meta && analytics.total_jobs < analytics.total_results * 0.9 &&
+                            !analytics.meta.complete_analysis &&
+                            !analytics.search_params?.full_analysis;
+
     return (
         <div className="p-6 max-w-7xl mx-auto space-y-8">
             {/* Search Context with Return Button */}
@@ -151,13 +163,41 @@ const JobAnalyticsDashboard = ({ analytics }) => {
                                     <> in <span className="font-semibold">{analytics.search_params.location}</span></>
                                 )}
                             </p>
+                            {analytics.meta && (
+                                <p className="text-sm text-blue-500 mt-1">
+                                    Analyzed {analytics.total_jobs} jobs
+                                    {analytics.total_results > analytics.total_jobs &&
+                                     ` out of ${analytics.total_results} total available`}
+                                </p>
+                            )}
                         </div>
-                        <a
-                            href="/"
-                            className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shadow-md"
-                        >
-                            Return to Search
-                        </a>
+                        <div className="flex space-x-3">
+                            {isPartialAnalysis && (
+                                <a
+                                    href={getFullAnalysisUrl()}
+                                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors shadow-md"
+                                    onClick={() => setIsLoading(true)}
+                                >
+                                    {isLoading ? (
+                                        <>
+                                            <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            Analyzing...
+                                        </>
+                                    ) : (
+                                        'Full Analysis'
+                                    )}
+                                </a>
+                            )}
+                            <a
+                                href="/"
+                                className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shadow-md"
+                            >
+                                Return to Search
+                            </a>
+                        </div>
                     </div>
                 </div>
             )}
@@ -413,6 +453,23 @@ const JobAnalyticsDashboard = ({ analytics }) => {
 </div>
                 </div>
             </div>
+
+            {/* Analysis metadata */}
+            {analytics.meta && (
+                <div className="bg-gray-50 p-4 rounded-lg text-center text-sm text-gray-500">
+                    Analysis performed on {analytics.meta.analysis_date}
+                    {isPartialAnalysis && (
+                        <span> • <span className="text-yellow-600 font-medium">Partial Analysis</span> •
+                            <a href={getFullAnalysisUrl()} className="text-blue-600 hover:underline ml-1">
+                                Get Full Analysis
+                            </a>
+                        </span>
+                    )}
+                    {analytics.meta.pre_cached && (
+                        <span> • Data pre-cached for faster performance</span>
+                    )}
+                </div>
+            )}
         </div>
     );
 };

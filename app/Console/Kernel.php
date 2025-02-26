@@ -21,14 +21,21 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Run the pre-cache job every day at midnight
-        $schedule->command('jobs:precache --common-searches')
+        // Run the pre-cache job daily at midnight for common searches
+        $schedule->command('jobs:precache --common-searches --max-jobs=2000')
                  ->dailyAt('00:00')
                  ->withoutOverlapping()
                  ->runInBackground();
 
-        $schedule->command('jobs:precache --months=24')
+        // Weekly full analysis with more jobs for popular locations
+        $schedule->command('jobs:precache --common-searches --max-jobs=5000')
                  ->weekly()
+                 ->withoutOverlapping()
+                 ->runInBackground();
+
+        // Monthly deeper analysis for all jobs in the database for the past 24 months
+        $schedule->command('jobs:precache --months=24 --max-jobs=10000')
+                 ->monthly()
                  ->withoutOverlapping()
                  ->runInBackground();
     }
