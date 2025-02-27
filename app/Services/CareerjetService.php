@@ -138,7 +138,9 @@ class CareerjetService
 
                 // Store the jobs in database for analytics
                 if (!empty($result->jobs)) {
-                    $storageDetails = $this->storeJobs($result->jobs, $forceStore);
+                    // FIX: Use direct database insertion for better reliability instead of batch
+                    $storageDetails = $this->storeJobsDirectly($result->jobs, $forceStore);
+
                     if ($this->debugMode) {
                         Log::info('Job storage results', $storageDetails);
                     }
@@ -198,23 +200,22 @@ class CareerjetService
     }
 
     /**
-     * Store jobs in the database using batch processing
+     * Store jobs directly in the database using individual inserts
+     * This is more reliable than batch processing
      *
      * @param array $jobs
      * @param bool $forceStore Force store all jobs even if they exist
      * @return array Statistics about storage operation
      */
-    private function storeJobs($jobs, $forceStore = false)
+    private function storeJobsDirectly($jobs, $forceStore = false)
     {
         $stored = 0;
         $skipped = 0;
         $updated = 0;
         $errors = 0;
         $beforeCount = Job::count();
-        $jobBatch = [];
-        $processedUrls = [];
 
-        foreach ($jobs as $index => $jobData) {
+        foreach ($jobs as $jobData) {
             try {
                 // Skip jobs without URL (our primary identifier)
                 if (empty($jobData->url)) {
@@ -227,14 +228,6 @@ class CareerjetService
                     $skipped++;
                     continue;
                 }
-
-                // Skip duplicate URLs within the same batch
-                if (in_array($jobData->url, $processedUrls)) {
-                    $skipped++;
-                    continue;
-                }
-
-                $processedUrls[] = $jobData->url;
 
                 // Check if job already exists
                 $exists = Job::where('url', $jobData->url)->exists();
@@ -249,33 +242,21 @@ class CareerjetService
                         Job::where('url', $jobData->url)->delete();
                     }
 
-                    // Add to batch for new jobs
-                    $jobBatch[] = $this->prepareJobData($jobData);
+                    // Prepare job data
+                    $jobRecord = $this->prepareJobData($jobData);
+
+                    // Insert directly instead of batching
+                    DB::table('career_jobs')->insert($jobRecord);
                     $stored++;
                 }
             } catch (Exception $e) {
                 // Log detailed error and continue with next job
                 Log::error('Error processing job:', [
-                    'index' => $index,
-                    'url' => $jobData->url ?? 'Unknown',
                     'title' => $jobData->title ?? 'Unknown',
+                    'url' => $jobData->url ?? 'Unknown',
                     'error' => $e->getMessage(),
                 ]);
                 $errors++;
-            }
-        }
-
-        // Batch insert all new jobs
-        if (!empty($jobBatch)) {
-            try {
-                DB::table('career_jobs')->insert($jobBatch);
-            } catch (Exception $e) {
-                Log::error('Error performing batch insert:', [
-                    'error' => $e->getMessage(),
-                    'count' => count($jobBatch)
-                ]);
-                $errors += count($jobBatch);
-                $stored = 0; // Reset stored count as the batch insert failed
             }
         }
 
