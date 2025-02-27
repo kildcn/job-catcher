@@ -45,13 +45,25 @@ class CareerjetService
      */
     public function searchJobs(array $params)
     {
-        // Create a cache key based on search parameters
+        // Extract and remove non-API parameters
+        $forceStore = isset($params['force_store']) ? (bool)$params['force_store'] : false;
+        unset($params['force_store']);
+
+        $returnStorageDetails = isset($params['return_storage_details']) ? (bool)$params['return_storage_details'] : false;
+        unset($params['return_storage_details']);
+
+        // Create a cache key based on search parameters (exclude our custom params)
         $cacheKey = 'jobs_' . md5(serialize($params));
+
+        // If force_store is true, skip the cache
+        if ($forceStore) {
+            return $this->performSearch($params, $forceStore, $returnStorageDetails);
+        }
 
         // Try to get from cache first
         try {
-            return Cache::remember($cacheKey, $this->cacheTimeout, function () use ($params) {
-                return $this->performSearch($params);
+            return Cache::remember($cacheKey, $this->cacheTimeout, function () use ($params, $forceStore, $returnStorageDetails) {
+                return $this->performSearch($params, $forceStore, $returnStorageDetails);
             });
         } catch (Exception $e) {
             Log::error('Careerjet API error', [
@@ -61,7 +73,7 @@ class CareerjetService
             ]);
 
             // If cache fails, try to fetch directly as fallback
-            return $this->performSearch($params);
+            return $this->performSearch($params, $forceStore, $returnStorageDetails);
         }
     }
 
@@ -69,9 +81,11 @@ class CareerjetService
      * Perform the actual search API call with retries
      *
      * @param array $params
+     * @param bool $forceStore Force store all jobs
+     * @param bool $returnStorageDetails Return detailed storage stats
      * @return array
      */
-    private function performSearch(array $params)
+    private function performSearch(array $params, $forceStore = false, $returnStorageDetails = false)
     {
         $attempt = 0;
         $lastException = null;
@@ -119,15 +133,18 @@ class CareerjetService
                     ];
                 }
 
+                // Storage details to return with response
+                $storageDetails = [];
+
                 // Store the jobs in database for analytics
                 if (!empty($result->jobs)) {
-                    $storageResults = $this->storeJobs($result->jobs);
+                    $storageDetails = $this->storeJobs($result->jobs, $forceStore);
                     if ($this->debugMode) {
-                        Log::info('Job storage results', $storageResults);
+                        Log::info('Job storage results', $storageDetails);
                     }
                 }
 
-                return [
+                $response = [
                     'total' => $result->hits,
                     'pages' => $result->pages,
                     'jobs' => $result->jobs,
@@ -137,6 +154,13 @@ class CareerjetService
                         'location' => $location
                     ]
                 ];
+
+                // Include storage details if requested
+                if ($returnStorageDetails) {
+                    $response['storage_details'] = $storageDetails;
+                }
+
+                return $response;
             } catch (Exception $e) {
                 $lastException = $e;
                 $attempt++;
@@ -177,9 +201,10 @@ class CareerjetService
      * Store jobs in the database using batch processing
      *
      * @param array $jobs
+     * @param bool $forceStore Force store all jobs even if they exist
      * @return array Statistics about storage operation
      */
-    private function storeJobs($jobs)
+    private function storeJobs($jobs, $forceStore = false)
     {
         $stored = 0;
         $skipped = 0;
@@ -214,11 +239,16 @@ class CareerjetService
                 // Check if job already exists
                 $exists = Job::where('url', $jobData->url)->exists();
 
-                if ($exists) {
+                if ($exists && !$forceStore) {
                     // Update existing job record
                     $this->updateExistingJob($jobData);
                     $updated++;
                 } else {
+                    // Force delete if exists and we're forcing store
+                    if ($exists && $forceStore) {
+                        Job::where('url', $jobData->url)->delete();
+                    }
+
                     // Add to batch for new jobs
                     $jobBatch[] = $this->prepareJobData($jobData);
                     $stored++;
@@ -230,7 +260,6 @@ class CareerjetService
                     'url' => $jobData->url ?? 'Unknown',
                     'title' => $jobData->title ?? 'Unknown',
                     'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
                 ]);
                 $errors++;
             }
@@ -253,7 +282,7 @@ class CareerjetService
         $afterCount = Job::count();
         $netChange = $afterCount - $beforeCount;
 
-        $storageResults = [
+        return [
             'before_count' => $beforeCount,
             'after_count' => $afterCount,
             'net_change' => $netChange,
@@ -261,12 +290,9 @@ class CareerjetService
             'updated_existing' => $updated,
             'skipped' => $skipped,
             'errors' => $errors,
-            'total_attempted' => count($jobs)
+            'total_attempted' => count($jobs),
+            'force_store' => $forceStore
         ];
-
-        Log::info('Jobs storage result:', $storageResults);
-
-        return $storageResults;
     }
 
     /**

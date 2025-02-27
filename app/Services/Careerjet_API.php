@@ -1,6 +1,6 @@
 <?php
 
- /** 
+ /**
  * Access Careerjet's job search from PHP
  *
  * PHP versions 4 and 5
@@ -25,14 +25,14 @@
  * Class to access Careerjet's job search API
  *
  * Code example:
- * 
+ *
  * <code>
  *
  *  require_once "Careerjet_API.php";
- *  
+ *
  *  // Create a new instance of the interface for UK job offers
  *  $cjapi = new Careerjet_API('en_GB');
- *  
+ *
  *
  *  // Then call the search methods (see below for parameters)
  *  $result = $cjapi->search( array(
@@ -57,9 +57,9 @@
  *          echo "\n";
  *       }
  *   }
- *  
+ *
  *  </code>
- *     
+ *
  *
  * @package    Careerjet_API
  * @author     Thomas Busch <api@careerjet.com>
@@ -77,7 +77,7 @@ class Careerjet_API {
   * <code>
   *  $cjapi = new Careerjet_API($locale);
   * </code>
-  * 
+  *
   * Available locales:
   *
   * <pre>
@@ -104,7 +104,7 @@ class Careerjet_API {
   *   en_GB      English          United Kingdom       http://www.careerjet.com
   *   en_US      English          United States        http://www.careerjet.com
   *   en_ZA      English          South Africa         http://www.careerjet.co.za
-  *   en_TW      English          Taiwan               http://www.careerjet.com.tw 
+  *   en_TW      English          Taiwan               http://www.careerjet.com.tw
   *   en_VN      English          Vietnam              http://www.careerjet.vn
   *   es_AR      Spanish          Argentina            http://www.opcionempleo.com.ar
   *   es_BO      Spanish          Bolivia              http://www.opcionempleo.com.bo
@@ -175,37 +175,52 @@ class Careerjet_API {
       $url .= '&'. $key . '='. urlencode($value);
     }
 
-    if (empty($_SERVER['REMOTE_ADDR'])) {
+    // Check if we're running from command line
+    $isCli = php_sapi_name() === 'cli';
+
+    if (empty($_SERVER['REMOTE_ADDR']) && !$isCli) {
       return (object) array(
         'type' => 'ERROR',
         'error' => 'not running within a http server'
       );
     }
 
-    if (isset($_SERVER["HTTP_CF_CONNECTING_IP"])) {
-      $ip = $_SERVER["HTTP_CF_CONNECTING_IP"];
-    } elseif (isset($_SERVER['HTTP_CLIENT_IP'])) {
-      $ip = $_SERVER['HTTP_CLIENT_IP'];
-    } elseif (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-      // For more info: http://en.wikipedia.org/wiki/X-Forwarded-For
-      $ip = trim(array_shift(array_values(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']))));
-    } else {
-      $ip = $_SERVER['REMOTE_ADDR'];
+    // For command line, use a default IP address
+    $ip = '127.0.0.1'; // Default IP for CLI
+
+    if (!$isCli) {
+      if (isset($_SERVER["HTTP_CF_CONNECTING_IP"])) {
+        $ip = $_SERVER["HTTP_CF_CONNECTING_IP"];
+      } elseif (isset($_SERVER['HTTP_CLIENT_IP'])) {
+        $ip = $_SERVER['HTTP_CLIENT_IP'];
+      } elseif (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        // For more info: http://en.wikipedia.org/wiki/X-Forwarded-For
+        $ip = trim(array_shift(array_values(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']))));
+      } else {
+        $ip = $_SERVER['REMOTE_ADDR'];
+      }
     }
 
     $url .= '&user_ip=' . $ip;
-    $url .= '&user_agent=' . urlencode($_SERVER['HTTP_USER_AGENT']);
-    
-    // determine current page
+
+    // Get user agent - use default for CLI
+    $userAgent = 'CareerjetCLI/1.0'; // Default for CLI
+    if (!$isCli && isset($_SERVER['HTTP_USER_AGENT'])) {
+      $userAgent = $_SERVER['HTTP_USER_AGENT'];
+    }
+
+    $url .= '&user_agent=' . urlencode($userAgent);
+
+    // Determine current page (only for web requests)
     $current_page_url = '';
-    if (!empty ($_SERVER["SERVER_NAME"]) && !empty ($_SERVER["REQUEST_URI"])) {
+    if (!$isCli && !empty($_SERVER["SERVER_NAME"]) && !empty($_SERVER["REQUEST_URI"])) {
       $current_page_url = 'http';
-      if (!empty ($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] == "on") {
+      if (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] == "on") {
         $current_page_url .= "s";
       }
       $current_page_url .= "://";
-  
-      if (!empty ($_SERVER["SERVER_PORT"]) && $_SERVER["SERVER_PORT"] != "80") {
+
+      if (!empty($_SERVER["SERVER_PORT"]) && $_SERVER["SERVER_PORT"] != "80") {
         $current_page_url .= $_SERVER["SERVER_NAME"].":".$_SERVER["SERVER_PORT"].$_SERVER["REQUEST_URI"];
       } else {
         $current_page_url .= $_SERVER["SERVER_NAME"].$_SERVER["REQUEST_URI"];
@@ -224,11 +239,11 @@ class Careerjet_API {
     $response = file_get_contents($url, false, $careerjet_api_context);
     return json_decode($response);
   }
-  
-  
+
+
   /**
    * Performs a search using Careerjet's public search API
-   * 
+   *
    * Code example:
    *
    * <code>
@@ -240,7 +255,7 @@ class Careerjet_API {
    *                                 )
    *                          );
    * </code>
-   * 
+   *
    * If the given location is not ambiguous, you can use this object like that:
    *
    * <code>
@@ -269,7 +284,7 @@ class Careerjet_API {
    *   if ($result->type == 'LOCATIONS') {
    *       echo "Suggested locations:\n";
    *       $locations = $result->locations;
-   *       
+   *
    *       foreach ($locations as &$loc) {
    *           echo $loc."\n" ;
    *       }
@@ -312,7 +327,7 @@ class Careerjet_API {
    *    Available values are 'relevance' (default), 'date', and 'salary'.
    *  - <b>start_num:</b><br>
    *    Num of first offer returned in entire result space should be >= 1 and <= Number of hits<br>
-   *    Default: 1 
+   *    Default: 1
    *  - <b>pagesize:</b><br>
    *    Number of offers returned in one call<br>
    *    Default: 20
