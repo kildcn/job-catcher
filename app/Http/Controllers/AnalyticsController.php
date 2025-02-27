@@ -51,12 +51,12 @@ class AnalyticsController extends Controller
                 // Run the command in the background
                 $logFile = storage_path('logs/fetch-jobs-' . time() . '.log');
                 $command = sprintf(
-                    'php %s/artisan jobs:fetch-all --keywords="%s" --location="%s" --delay=1 --clear-cache > %s 2>&1 &',
-                    base_path(),
-                    escapeshellarg($keywords),
-                    escapeshellarg($location),
-                    $logFile
-                );
+                  'php %s/artisan jobs:fetch-all --keywords="%s" --location="%s" --delay=1 --clear-cache --force-store > %s 2>&1 &',
+                  base_path(),
+                  escapeshellarg($keywords),
+                  escapeshellarg($location),
+                  $logFile
+              );
 
                 exec($command);
 
@@ -158,7 +158,8 @@ class AnalyticsController extends Controller
                 'keywords' => $keywords,
                 'location' => $location,
                 'page' => 1,
-                'pagesize' => 100 // Get as many as possible in one request
+                'pagesize' => 100, // Get as many as possible in one request
+                'force_store' => true
             ]);
 
             Log::info("Fetched quick refresh page", [

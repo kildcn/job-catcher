@@ -94,11 +94,12 @@ class DiagnosticsController extends Controller
             // Fetch jobs
             $startTime = microtime(true);
             $pageResult = $this->careerjetService->searchJobs([
-                'keywords' => $keywords,
-                'location' => $location,
-                'page' => 1,
-                'pagesize' => $pageSize
-            ]);
+              'keywords' => $keywords,
+              'location' => $location,
+              'page' => 1,
+              'pagesize' => $pageSize,
+              'force_store' => true  // Add this line
+          ]);
             $endTime = microtime(true);
 
             $jobCount = isset($pageResult['jobs']) ? count($pageResult['jobs']) : 0;
