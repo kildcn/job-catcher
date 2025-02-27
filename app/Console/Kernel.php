@@ -14,6 +14,7 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         \App\Console\Commands\PreCacheJobAnalytics::class,
+        \App\Console\Commands\FetchAllJobs::class,
     ];
 
     /**
@@ -36,6 +37,14 @@ class Kernel extends ConsoleKernel
         // Monthly deeper analysis for all jobs in the database for the past 24 months
         $schedule->command('jobs:precache --months=24 --max-jobs=10000')
                  ->monthly()
+                 ->withoutOverlapping()
+                 ->runInBackground();
+
+        // Fetch specific job searches that are important
+        $schedule->command('jobs:fetch-all --keywords="developer" --location="berlin" --delay=2')
+                 ->weekly()
+                 ->sundays()
+                 ->at('03:00')
                  ->withoutOverlapping()
                  ->runInBackground();
     }

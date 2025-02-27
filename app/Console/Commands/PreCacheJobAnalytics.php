@@ -22,7 +22,9 @@ class PreCacheJobAnalytics extends Command
                         {--location= : Specific location to cache}
                         {--days=30 : Number of days to keep cached data}
                         {--months=24 : How many months back to fetch data}
-                        {--max-jobs=5000 : Maximum number of jobs to fetch per search}';
+                        {--max-jobs=5000 : Maximum number of jobs to fetch per search}
+                        {--force : Force refresh even if sufficient data exists}
+                        {--debug : Enable debug mode with more verbose output}';
 
     /**
      * The console command description.
@@ -49,7 +51,7 @@ class PreCacheJobAnalytics extends Command
      */
     protected $commonLocations = [
         'london', 'manchester', 'birmingham', 'leeds', 'edinburgh', 'glasgow',
-        'remote', 'bristol', 'cambridge', 'oxford', 'uk'
+        'remote', 'bristol', 'cambridge', 'oxford', 'uk', 'berlin'
     ];
 
     /**
@@ -62,6 +64,13 @@ class PreCacheJobAnalytics extends Command
         // Duration to keep cached data
         $cacheDays = (int) $this->option('days');
         $maxJobs = (int) $this->option('max-jobs');
+        $debug = $this->option('debug');
+        $force = $this->option('force');
+
+        if ($debug) {
+            $this->info("Cache days: $cacheDays, Max jobs: $maxJobs");
+            $this->info("Force refresh: " . ($force ? "Yes" : "No"));
+        }
 
         if ($this->option('keywords') && $this->option('location')) {
             // Cache specific keyword/location
@@ -71,16 +80,18 @@ class PreCacheJobAnalytics extends Command
                 $careerjetService,
                 $analyticsService,
                 $cacheDays,
-                $maxJobs
+                $maxJobs,
+                $force,
+                $debug
             );
         }
         elseif ($this->option('common-searches')) {
             // Cache common search combinations
-            $this->cacheCommonSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs);
+            $this->cacheCommonSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug);
         }
         else {
             // Cache most frequently searched terms from database
-            $this->cachePopularSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs);
+            $this->cachePopularSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug);
         }
 
         $this->info('Pre-caching completed!');
@@ -91,7 +102,7 @@ class PreCacheJobAnalytics extends Command
     /**
      * Cache common search combinations
      */
-    private function cacheCommonSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs)
+    private function cacheCommonSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug)
     {
         $this->info('Pre-caching common job role and location combinations...');
 
@@ -100,7 +111,7 @@ class PreCacheJobAnalytics extends Command
 
         foreach ($this->commonJobRoles as $role) {
             foreach ($this->commonLocations as $location) {
-                $this->cacheAnalytics($role, $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs);
+                $this->cacheAnalytics($role, $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug);
                 $bar->advance();
             }
         }
@@ -112,7 +123,7 @@ class PreCacheJobAnalytics extends Command
     /**
      * Cache popular searches based on database statistics
      */
-    private function cachePopularSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs)
+    private function cachePopularSearches($careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug)
     {
         $this->info('Pre-caching analytics for most popular job titles...');
 
@@ -124,8 +135,9 @@ class PreCacheJobAnalytics extends Command
             ->get();
 
         // Extract most common locations from database
-        $popularLocations = Job::selectRaw('locations')
-            ->distinct()
+        $popularLocations = Job::selectRaw('COUNT(*) as count, locations')
+            ->groupBy('locations')
+            ->orderBy('count', 'desc')
             ->limit(10)
             ->get()
             ->pluck('locations')
@@ -142,13 +154,13 @@ class PreCacheJobAnalytics extends Command
         // Cache analytics for most common titles
         foreach ($popularTitles as $titleData) {
             $title = $titleData->title;
-            $this->cacheAnalytics($title, '', $careerjetService, $analyticsService, $cacheDays, $maxJobs);
+            $this->cacheAnalytics($title, '', $careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug);
             $bar->advance();
         }
 
         // Cache analytics for most common locations
         foreach ($popularLocations as $location) {
-            $this->cacheAnalytics('', $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs);
+            $this->cacheAnalytics('', $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug);
             $bar->advance();
         }
 
@@ -159,18 +171,19 @@ class PreCacheJobAnalytics extends Command
     /**
      * Cache analytics for a specific keyword/location pair
      */
-    private function cacheAnalytics($keywords, $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs)
+    private function cacheAnalytics($keywords, $location, $careerjetService, $analyticsService, $cacheDays, $maxJobs, $force, $debug)
     {
         $cacheKey = sprintf('analytics_%s_%s', md5($keywords), md5($location));
 
         try {
             // Update job database first
-            $this->updateJobsIfNeeded($keywords, $location, $careerjetService, $maxJobs);
+            $this->updateJobsIfNeeded($keywords, $location, $careerjetService, $maxJobs, $force, $debug);
 
             // Get matching jobs from database
             $jobs = $this->getJobsFromDatabase($keywords, $location);
 
             if ($jobs->isEmpty()) {
+                $this->warn("No jobs found for '$keywords' in '$location' - skipping analytics generation");
                 return;
             }
 
@@ -203,6 +216,17 @@ class PreCacheJobAnalytics extends Command
             // Also cache a full analysis version
             Cache::put($cacheKey . '_full', $analytics, now()->addDays($cacheDays));
 
+            if ($debug) {
+                $this->info(sprintf(
+                    "Cached analytics for '%s' in '%s': %d/%d jobs (%.1f%%)",
+                    $keywords,
+                    $location,
+                    $jobs->count(),
+                    $apiResultCount,
+                    $apiResultCount > 0 ? ($jobs->count() / $apiResultCount * 100) : 0
+                ));
+            }
+
             Log::info('Pre-cached analytics', [
                 'keywords' => $keywords,
                 'location' => $location,
@@ -225,32 +249,30 @@ class PreCacheJobAnalytics extends Command
      * Get total results count from API
      */
     private function getTotalResultCount($keywords, $location, $careerjetService)
-{
-    try {
-        $this->info("Fetching count for '$keywords' in '$location'");
-        $result = $careerjetService->searchJobs([
-            'keywords' => $keywords,
-            'location' => $location,
-            'page' => 1,
-            'pagesize' => 1
-        ]);
+    {
+        try {
+            $result = $careerjetService->searchJobs([
+                'keywords' => $keywords,
+                'location' => $location,
+                'page' => 1,
+                'pagesize' => 1
+            ]);
 
-        $count = $result['total'] ?? 0;
-        $this->info("API returned {$count} total results");
-        return $count;
-    } catch (\Exception $e) {
-        $this->error("Error getting job count: {$e->getMessage()}");
-        Log::error('Error getting job count', [
-            'error' => $e->getMessage()
-        ]);
-        return 0;
+            $count = $result['total'] ?? 0;
+            return $count;
+        } catch (\Exception $e) {
+            $this->error("Error getting job count: {$e->getMessage()}");
+            Log::error('Error getting job count', [
+                'error' => $e->getMessage()
+            ]);
+            return 0;
+        }
     }
-}
 
     /**
      * Update jobs database if needed
      */
-    private function updateJobsIfNeeded($keywords, $location, $careerjetService, $maxJobs)
+    private function updateJobsIfNeeded($keywords, $location, $careerjetService, $maxJobs, $force, $debug)
     {
         try {
             // Get approximate count from API
@@ -284,11 +306,13 @@ class PreCacheJobAnalytics extends Command
                 ->count();
 
             // If we have less than 90% of available jobs (up to max), fetch more
-            if ($dbCount < min($apiCount, $maxJobs) * 0.9 && $apiCount > 0) {
+            if ($force || ($dbCount < min($apiCount, $maxJobs) * 0.9 && $apiCount > 0)) {
                 // Calculate how many pages to fetch
-                $pageSize = 100;
+                $pageSize = 100; // Maximum page size allowed
                 $targetCount = min($apiCount, $maxJobs);
                 $pagesToFetch = min(ceil($targetCount / $pageSize), 100); // Max 100 pages
+                $existingCount = 0;
+                $newCount = 0;
 
                 $this->info(sprintf(
                     "Fetching jobs for '%s' in '%s': %d pages to get %d/%d jobs",
@@ -298,6 +322,9 @@ class PreCacheJobAnalytics extends Command
                     $targetCount,
                     $apiCount
                 ));
+
+                $bar = $this->output->createProgressBar($pagesToFetch);
+                $bar->start();
 
                 for ($page = 1; $page <= $pagesToFetch; $page++) {
                     $pageResult = $careerjetService->searchJobs([
@@ -311,19 +338,43 @@ class PreCacheJobAnalytics extends Command
                         break;
                     }
 
+                    // Count new vs existing jobs
+                    foreach ($pageResult['jobs'] as $job) {
+                        $exists = Job::where('url', $job->url)->exists();
+                        if ($exists) {
+                            $existingCount++;
+                        } else {
+                            $newCount++;
+                        }
+                    }
+
+                    $bar->advance();
+
                     // Add a short delay to avoid API rate limits
                     if ($page < $pagesToFetch) {
                         usleep(500000); // 0.5 second
                     }
                 }
-            } else {
+
+                $bar->finish();
+                $this->newLine();
+
                 $this->info(sprintf(
-                    "Sufficient data for '%s' in '%s': %d/%d jobs already in database",
-                    $keywords,
-                    $location,
-                    $dbCount,
-                    $apiCount
+                    "Done fetching: %d new jobs added, %d already existed",
+                    $newCount,
+                    $existingCount
                 ));
+            } else {
+                if ($debug) {
+                    $this->info(sprintf(
+                        "Sufficient data for '%s' in '%s': %d/%d jobs already in database (%.1f%%)",
+                        $keywords,
+                        $location,
+                        $dbCount,
+                        $apiCount,
+                        $apiCount > 0 ? ($dbCount / $apiCount * 100) : 0
+                    ));
+                }
             }
         }
         catch (\Exception $e) {

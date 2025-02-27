@@ -15,6 +15,7 @@ class CareerjetService
     private $cacheTimeout;
     private $maxRetries = 3;
     private $affiliateId;
+    private $debugMode = false;
 
     public function __construct()
     {
@@ -22,6 +23,18 @@ class CareerjetService
         $this->api = new \Careerjet_API('en_GB');
         $this->cacheTimeout = config('app.cache_timeout', 300); // 5 minutes default
         $this->affiliateId = env('CAREERJET_AFFID', 'e22e722bd9a30362472924954689ec18');
+    }
+
+    /**
+     * Enable debug mode
+     *
+     * @param bool $debug
+     * @return self
+     */
+    public function debug($debug = true)
+    {
+        $this->debugMode = $debug;
+        return $this;
     }
 
     /**
@@ -87,6 +100,12 @@ class CareerjetService
                 ]);
 
                 if ($result->type !== 'JOBS') {
+                    Log::warning('No jobs found in API response', [
+                        'keywords' => $keywords,
+                        'location' => $location,
+                        'result_type' => $result->type
+                    ]);
+
                     return [
                         'total' => 0,
                         'pages' => 0,
@@ -102,7 +121,10 @@ class CareerjetService
 
                 // Store the jobs in database for analytics
                 if (!empty($result->jobs)) {
-                    $this->storeJobs($result->jobs);
+                    $storageResults = $this->storeJobs($result->jobs);
+                    if ($this->debugMode) {
+                        Log::info('Job storage results', $storageResults);
+                    }
                 }
 
                 return [
@@ -119,6 +141,11 @@ class CareerjetService
                 $lastException = $e;
                 $attempt++;
 
+                Log::warning("API search attempt $attempt failed", [
+                    'error' => $e->getMessage(),
+                    'params' => $params,
+                ]);
+
                 // Wait a bit before retrying (exponential backoff)
                 if ($attempt < $this->maxRetries) {
                     sleep(pow(2, $attempt - 1)); // 1, 2, 4 seconds...
@@ -129,7 +156,8 @@ class CareerjetService
         // If we get here, all attempts failed
         Log::error('All API search attempts failed', [
             'error' => $lastException ? $lastException->getMessage() : 'Unknown error',
-            'attempts' => $attempt
+            'attempts' => $attempt,
+            'params' => $params
         ]);
 
         return [
@@ -146,56 +174,57 @@ class CareerjetService
     }
 
     /**
-     * Store jobs in the database using raw insert/update
+     * Store jobs in the database using batch processing
      *
      * @param array $jobs
-     * @return void
+     * @return array Statistics about storage operation
      */
     private function storeJobs($jobs)
     {
         $stored = 0;
         $skipped = 0;
+        $updated = 0;
         $errors = 0;
         $beforeCount = Job::count();
+        $jobBatch = [];
+        $processedUrls = [];
 
         foreach ($jobs as $index => $jobData) {
             try {
-                // Debug what we're processing
-                Log::debug("Processing job data", [
-                    'index' => $index,
-                    'title' => $jobData->title ?? 'No title',
-                    'url_provided' => !empty($jobData->url)
-                ]);
-
                 // Skip jobs without URL (our primary identifier)
                 if (empty($jobData->url)) {
-                    Log::warning("Skipping job with no URL", [
-                        'title' => $jobData->title ?? 'Unknown',
-                        'company' => $jobData->company ?? 'Unknown'
-                    ]);
+                    if ($this->debugMode) {
+                        Log::warning("Skipping job with no URL", [
+                            'title' => $jobData->title ?? 'Unknown',
+                            'company' => $jobData->company ?? 'Unknown'
+                        ]);
+                    }
                     $skipped++;
                     continue;
                 }
 
-                // Fix URLs with single quotes to prevent SQL issues
-                $url = str_replace("'", "''", $jobData->url);
+                // Skip duplicate URLs within the same batch
+                if (in_array($jobData->url, $processedUrls)) {
+                    $skipped++;
+                    continue;
+                }
 
-                // First, check if job already exists
-                $exists = DB::table('career_jobs')
-                    ->where('url', $jobData->url)
-                    ->exists();
+                $processedUrls[] = $jobData->url;
+
+                // Check if job already exists
+                $exists = Job::where('url', $jobData->url)->exists();
 
                 if ($exists) {
-                    // Job already exists - we'll update it
+                    // Update existing job record
                     $this->updateExistingJob($jobData);
-                    $skipped++;
+                    $updated++;
                 } else {
-                    // Job doesn't exist - insert new record
-                    $this->insertNewJob($jobData);
+                    // Add to batch for new jobs
+                    $jobBatch[] = $this->prepareJobData($jobData);
                     $stored++;
                 }
             } catch (Exception $e) {
-                // Log the full error and continue with the next job
+                // Log detailed error and continue with next job
                 Log::error('Error processing job:', [
                     'index' => $index,
                     'url' => $jobData->url ?? 'Unknown',
@@ -207,61 +236,83 @@ class CareerjetService
             }
         }
 
+        // Batch insert all new jobs
+        if (!empty($jobBatch)) {
+            try {
+                DB::table('career_jobs')->insert($jobBatch);
+            } catch (Exception $e) {
+                Log::error('Error performing batch insert:', [
+                    'error' => $e->getMessage(),
+                    'count' => count($jobBatch)
+                ]);
+                $errors += count($jobBatch);
+                $stored = 0; // Reset stored count as the batch insert failed
+            }
+        }
+
         $afterCount = Job::count();
         $netChange = $afterCount - $beforeCount;
 
-        Log::info('Jobs storage result:', [
+        $storageResults = [
             'before_count' => $beforeCount,
             'after_count' => $afterCount,
             'net_change' => $netChange,
             'new_stored' => $stored,
-            'skipped_existing' => $skipped,
+            'updated_existing' => $updated,
+            'skipped' => $skipped,
             'errors' => $errors,
             'total_attempted' => count($jobs)
-        ]);
+        ];
+
+        Log::info('Jobs storage result:', $storageResults);
+
+        return $storageResults;
     }
 
     /**
      * Update an existing job in the database
+     *
+     * @param object $jobData
+     * @return bool
      */
     private function updateExistingJob($jobData)
     {
         try {
-            // Update the existing job record
-            $job = Job::where('url', $jobData->url)->first();
+            $updateData = [
+                'title' => $jobData->title,
+                'description' => $jobData->description ?? '',
+                'company' => $jobData->company ?? 'Unknown',
+                'locations' => $jobData->locations ?? '',
+                'updated_at' => now()
+            ];
 
-            if ($job) {
-                $job->title = $jobData->title ?? $job->title;
-                $job->description = $jobData->description ?? $job->description;
-                $job->company = $jobData->company ?? $job->company;
-                $job->locations = $jobData->locations ?? $job->locations;
-                $job->job_date = $jobData->date ?? $job->job_date;
-                $job->salary = $jobData->salary ?? $job->salary;
-
-                // Update salary info if available
-                if (isset($jobData->salary_min)) {
-                    $job->salary_min = $jobData->salary_min;
-                }
-
-                if (isset($jobData->salary_max)) {
-                    $job->salary_max = $jobData->salary_max;
-                }
-
-                if (isset($jobData->salary_type)) {
-                    $job->salary_type = $jobData->salary_type;
-                }
-
-                if (isset($jobData->salary_currency_code)) {
-                    $job->salary_currency_code = $jobData->salary_currency_code;
-                }
-
-                $job->save();
-
-                Log::debug("Updated existing job", ['url' => $job->url]);
-                return true;
+            // Update salary info if available
+            if (isset($jobData->salary)) {
+                $updateData['salary'] = $jobData->salary;
             }
 
-            return false;
+            if (isset($jobData->salary_min)) {
+                $updateData['salary_min'] = $jobData->salary_min;
+            }
+
+            if (isset($jobData->salary_max)) {
+                $updateData['salary_max'] = $jobData->salary_max;
+            }
+
+            if (isset($jobData->salary_type)) {
+                $updateData['salary_type'] = $jobData->salary_type;
+            }
+
+            if (isset($jobData->salary_currency_code)) {
+                $updateData['salary_currency_code'] = $jobData->salary_currency_code;
+            }
+
+            // Use query builder for faster updates
+            DB::table('career_jobs')
+                ->where('url', $jobData->url)
+                ->update($updateData);
+
+            return true;
         } catch (Exception $e) {
             Log::error('Error updating job:', [
                 'url' => $jobData->url,
@@ -272,49 +323,54 @@ class CareerjetService
     }
 
     /**
-     * Insert a new job into the database
+     * Prepare job data for insertion
+     *
+     * @param object $jobData
+     * @return array
      */
-    private function insertNewJob($jobData)
+    private function prepareJobData($jobData)
     {
-        try {
-            // Create using a model to ensure proper fillable fields
-            $job = new Job();
-            $job->title = $jobData->title;
-            $job->description = $jobData->description ?? '';
-            $job->company = $jobData->company ?? 'Unknown';
-            $job->locations = $jobData->locations ?? '';
-            $job->url = $jobData->url;
-            $job->job_date = $jobData->date ?? now();
-            $job->salary = $jobData->salary ?? null;
+        $now = now();
+        $jobDate = isset($jobData->date) ? $jobData->date : $now->toDateString();
 
-            // Add salary info if present
-            if (isset($jobData->salary_min)) {
-                $job->salary_min = $jobData->salary_min;
+        // Normalize job date
+        if (is_string($jobDate)) {
+            try {
+                $jobDate = Carbon::parse($jobDate)->toDateString();
+            } catch (Exception $e) {
+                $jobDate = $now->toDateString();
             }
-
-            if (isset($jobData->salary_max)) {
-                $job->salary_max = $jobData->salary_max;
-            }
-
-            if (isset($jobData->salary_type)) {
-                $job->salary_type = $jobData->salary_type;
-            }
-
-            if (isset($jobData->salary_currency_code)) {
-                $job->salary_currency_code = $jobData->salary_currency_code;
-            }
-
-            $job->save();
-
-            Log::debug("Inserted new job", ['url' => $job->url]);
-            return true;
-        } catch (Exception $e) {
-            Log::error('Error inserting job:', [
-                'url' => $jobData->url,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-            throw $e;
         }
+
+        $data = [
+            'title' => $jobData->title,
+            'description' => $jobData->description ?? '',
+            'company' => $jobData->company ?? 'Unknown',
+            'locations' => $jobData->locations ?? '',
+            'url' => $jobData->url,
+            'job_date' => $jobDate,
+            'salary' => $jobData->salary ?? null,
+            'created_at' => $now,
+            'updated_at' => $now
+        ];
+
+        // Add salary info if present
+        if (isset($jobData->salary_min)) {
+            $data['salary_min'] = $jobData->salary_min;
+        }
+
+        if (isset($jobData->salary_max)) {
+            $data['salary_max'] = $jobData->salary_max;
+        }
+
+        if (isset($jobData->salary_type)) {
+            $data['salary_type'] = $jobData->salary_type;
+        }
+
+        if (isset($jobData->salary_currency_code)) {
+            $data['salary_currency_code'] = $jobData->salary_currency_code;
+        }
+
+        return $data;
     }
 }
